@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # PostgreSQL数据库
+  db:
+    image: postgres:15-alpine
+    container_name: novelflow-db
+    environment:
+      POSTGRES_DB: novelflow
+      POSTGRES_USER: novelflow
+      POSTGRES_PASSWORD: novelflow_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novelflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis缓存
+  redis:
+    image: redis:7-alpine
+    container_name: novelflow-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 向量数据库（用于知识库）
+  vector_db:
+    image: pgvector/pgvector:pg15
+    container_name: novelflow-vector-db
+    environment:
+      POSTGRES_DB: vector_db
+      POSTGRES_USER: novelflow
+      POSTGRES_PASSWORD: novelflow_password
+    volumes:
+      - vector_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  # MinIO对象存储（可选）
+  minio:
+    image: minio/minio:latest
+    container_name: novelflow-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # 后端API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: novelflow-backend
+    environment:
+      - DATABASE_URL=postgresql://novelflow:novelflow_password@db:5432/novelflow
+      - REDIS_URL=redis://redis:6379/0
+      - VECTOR_DB_URL=postgresql://novelflow:novelflow_password@vector_db:5432/vector_db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - DEBUG=${DEBUG:-False}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - storage_data:/app/storage
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # 前端
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: novelflow-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:
+  vector_data:
+  minio_data:
+  storage_data:
